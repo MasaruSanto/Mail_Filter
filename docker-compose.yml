@@ -1,0 +1,33 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # SQLite DB を永続化
+      - ./backend/priority.db:/app/priority.db
+    env_file:
+      # GOOGLE_SECRET_KEY / GOOGLE_CLIENT_SECRET などを読み込む
+      - .env
+    environment:
+      # Docker 内から LM Studio（ホスト側 localhost:1234）に接続
+      LLM_BASE_URL: http://host.docker.internal:1234/v1
+    # Linux で host.docker.internal を解決するために必要
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # ブラウザからバックエンドへのアクセス先（ホスト側ポートを使用）
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    environment:
+      # SSR（Next.js サーバー側）からバックエンドへのアクセス先
+      INTERNAL_API_URL: http://backend:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
