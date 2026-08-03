@@ -54,7 +54,7 @@ def _text_part(mime_type: str, text: str) -> dict:
 
 
 def _attachment_part(filename: str = "file.pdf") -> dict:
-    return {"mimeType": "application/pdf", "filename": filename, "body": {}}
+    return {"mimeType": "application/pdf", "filename": filename, "body": {"attachmentId": "att-1", "size": 1234}}
 
 
 # ---------------------------------------------------------------------------
@@ -313,24 +313,26 @@ class TestDecodeData:
 
 
 # ---------------------------------------------------------------------------
-# _has_attachments()
+# _extract_attachments()
 # ---------------------------------------------------------------------------
 
-class TestHasAttachments:
+class TestExtractAttachments:
 
     def setup_method(self):
         self.parser = GmailParser()
 
-    def test_returns_true_when_part_has_filename(self):
+    def test_returns_attachment_when_part_has_filename_and_id(self):
         payload = {"parts": [_attachment_part("report.pdf")]}
-        assert self.parser._has_attachments(payload) is True
+        result = self.parser._extract_attachments(payload)
+        assert len(result) == 1
+        assert result[0].filename == "report.pdf"
 
-    def test_returns_false_when_no_filename(self):
+    def test_returns_empty_when_no_filename(self):
         payload = {"parts": [_text_part("text/plain", "本文")]}
-        assert self.parser._has_attachments(payload) is False
+        assert self.parser._extract_attachments(payload) == []
 
-    def test_returns_false_for_empty_parts(self):
-        assert self.parser._has_attachments({}) is False
+    def test_returns_empty_for_empty_parts(self):
+        assert self.parser._extract_attachments({}) == []
 
     def test_detects_nested_attachment(self):
         """ネストした parts 内の添付ファイルも検出する"""
@@ -342,12 +344,14 @@ class TestHasAttachments:
                 }
             ]
         }
-        assert self.parser._has_attachments(payload) is True
+        result = self.parser._extract_attachments(payload)
+        assert len(result) == 1
+        assert result[0].filename == "nested.xlsx"
 
-    def test_returns_false_when_filename_is_empty_string(self):
+    def test_ignores_part_when_filename_is_empty_string(self):
         """filename が空文字列のパートは添付とみなさない"""
         payload = {"parts": [{"mimeType": "text/plain", "filename": "", "body": {}}]}
-        assert self.parser._has_attachments(payload) is False
+        assert self.parser._extract_attachments(payload) == []
 
 
 # ---------------------------------------------------------------------------
