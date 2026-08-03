@@ -134,7 +134,7 @@ Mail_Filter_AI/
 
 - Python 3.12+
 - Node.js 20+
-- [LM Studio](https://lmstudio.ai/) でローカルサーバーを起動済み（`http://localhost:1234/v1`）
+- [LM Studio](https://lmstudio.ai/) でローカルサーバーを起動済み（`http://localhost:1234/v1`）。動作確認モデル: `openai/gpt-oss-20b`
 - Google Cloud Console で Gmail API / Calendar API / People API を有効化し、OAuth 2.0 クライアント ID を取得済み
 
 ### 環境変数（`.env`）
