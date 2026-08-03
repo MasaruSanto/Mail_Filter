@@ -13,8 +13,7 @@ for _p in (_backend, _core):
         sys.path.insert(0, _p)
 
 from core.parser import GmailParser
-from llm_schemas import Mail  # parser.py と同じパスで import しないと isinstance が別クラス判定になる
-
+from llm_schemas import Mail
 
 # ---------------------------------------------------------------------------
 # テスト用ヘルパー
