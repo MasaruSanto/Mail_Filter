@@ -1,5 +1,15 @@
+import sys
+import os
+
 import pytest
 from unittest.mock import MagicMock
+
+# backend/ と backend/core/ をパスに追加
+_backend = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_core = os.path.join(_backend, "core")
+for _p in (_backend, _core):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from core.todo_service import TodoService
 
@@ -39,9 +49,9 @@ def test_create_success():
         user_id=user_id
     )
 
-    # _chain.invoke をモック
-    service._chain = MagicMock()
-    service._chain.invoke.return_value = expected
+    # chain.invoke をモック
+    service.chain = MagicMock()
+    service.chain.invoke.return_value = expected
 
     # Act
     result = service.create(analyzed_mail, user_id)
@@ -49,7 +59,7 @@ def test_create_success():
     # Assert
     assert result == expected
 
-    service._chain.invoke.assert_called_once_with({
+    service.chain.invoke.assert_called_once_with({
         "title": "買い物",
         "body": "牛乳と卵を買う",
         "user_id": user_id,

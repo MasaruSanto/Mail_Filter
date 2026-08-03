@@ -9,10 +9,10 @@ import pytest
 _backend = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _core = os.path.join(_backend, "core")
 for _p in (_backend, _core):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+  if _p not in sys.path:
+    sys.path.insert(0, _p)
 
-from core.pipeline import MailPipeline, MAX_BODY_CHARS
+from core.pipeline import MailPipeline
 from core.llm_schemas import Mail, MailAIAnalysis, AnalyzedMail, TodoCreate
 from core.enums import TagType, TodoStatus
 
@@ -37,7 +37,7 @@ def _make_mail(**kwargs) -> Mail:
     return Mail(**defaults)
 
 
-def _make_analysis(mail_id: str = "test-mail-id") -> MailAIAnalysis:
+def _make_analysis(mail_id: str = "test-mail-id", should_create_todo: bool = False) -> MailAIAnalysis:
     return MailAIAnalysis(
         mail_id=mail_id,
         tag=TagType.business,
@@ -48,6 +48,7 @@ def _make_analysis(mail_id: str = "test-mail-id") -> MailAIAnalysis:
         ai_response_message="承知いたしました。",
         model_name="test-model",
         analyzed_at=datetime(2026, 5, 1, 12, 0, 0),
+        should_create_todo=should_create_todo,
     )
 
 
@@ -55,8 +56,7 @@ def _make_analyzed(should_create_todo: bool = False) -> AnalyzedMail:
     mail = _make_mail()
     return AnalyzedMail(
         mail=mail,
-        mail_ai_analysis=_make_analysis(mail.id),
-        should_create_todo=should_create_todo,
+        mail_ai_analysis=_make_analysis(mail.id, should_create_todo=should_create_todo),
     )
 
 
@@ -85,9 +85,9 @@ def mocks():
         patch(f"{PATCH_BASE}.GmailParser") as mock_parser_cls,
         patch(f"{PATCH_BASE}.Pretreatment") as mock_pre_cls,
         patch(f"{PATCH_BASE}.MailClassifier") as mock_clf_cls,
-        patch(f"{PATCH_BASE}.TODO") as mock_todo_cls,
+        patch(f"{PATCH_BASE}.TodoService") as mock_todo_cls,
     ):
-        pipeline = MailPipeline(user_id="user-1", max_results=10)
+        pipeline = MailPipeline(user_id="user-1", refresh_token="refresh-token", max_results=10)
         yield {
             "pipeline": pipeline,
             "mail_repo": mock_repo_cls.return_value,
@@ -110,23 +110,23 @@ class TestMailPipelineInit:
             patch(f"{PATCH_BASE}.GmailParser"),
             patch(f"{PATCH_BASE}.Pretreatment"),
             patch(f"{PATCH_BASE}.MailClassifier"),
-            patch(f"{PATCH_BASE}.TODO"),
+            patch(f"{PATCH_BASE}.TodoService"),
         ):
-            p = MailPipeline(user_id="abc-123", max_results=5)
+            p = MailPipeline(user_id="abc-123", refresh_token="refresh-token", max_results=5)
             assert p._user_id == "abc-123"
             assert p._max_results == 5
 
-    def test_default_max_results_is_10(self):
+    def test_default_max_results_is_3(self):
         with (
             patch(f"{PATCH_BASE}.GoogleMailClient"),
             patch(f"{PATCH_BASE}.MailRepository"),
             patch(f"{PATCH_BASE}.GmailParser"),
             patch(f"{PATCH_BASE}.Pretreatment"),
             patch(f"{PATCH_BASE}.MailClassifier"),
-            patch(f"{PATCH_BASE}.TODO"),
+            patch(f"{PATCH_BASE}.TodoService"),
         ):
-            p = MailPipeline(user_id="x")
-            assert p._max_results == 10
+            p = MailPipeline(user_id="x", refresh_token="refresh-token")
+            assert p._max_results == 3
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +140,10 @@ class TestRun:
         pipeline._process_one = MagicMock()
 
         with patch(f"{PATCH_BASE}.SessionLocal", return_value=MagicMock()):
-            result = pipeline.run()
+            processed, errors = pipeline.run()
 
-        assert result == 3
+        assert processed == 3
+        assert errors == []
 
     def test_calls_process_one_for_each_message_id(self, mocks):
         pipeline = mocks["pipeline"]
@@ -165,7 +166,7 @@ class TestRun:
         with patch(f"{PATCH_BASE}.SessionLocal", return_value=MagicMock()):
             pipeline.run()
 
-        mocks["mail_repo"].fetch_id_list.assert_called_once_with(max_results=10)
+        mocks["mail_repo"].fetch_id_list.assert_called_once_with(max_results=10, after_date=None)
 
     def test_returns_zero_when_no_mails(self, mocks):
         pipeline = mocks["pipeline"]
@@ -173,9 +174,10 @@ class TestRun:
         pipeline._process_one = MagicMock()
 
         with patch(f"{PATCH_BASE}.SessionLocal", return_value=MagicMock()):
-            result = pipeline.run()
+            processed, errors = pipeline.run()
 
-        assert result == 0
+        assert processed == 0
+        assert errors == []
         pipeline._process_one.assert_not_called()
 
     def test_closes_db_session_on_success(self, mocks):
@@ -189,16 +191,20 @@ class TestRun:
 
         mock_db.close.assert_called_once()
 
-    def test_closes_db_session_even_when_process_one_raises(self, mocks):
+    def test_records_error_and_continues_when_process_one_raises(self, mocks):
+        """_process_one が例外を出しても run() は落ちず、エラーとして記録して続行する。"""
         pipeline = mocks["pipeline"]
         mocks["mail_repo"].fetch_id_list.return_value = ["id1"]
         pipeline._process_one = MagicMock(side_effect=RuntimeError("AI失敗"))
 
         mock_db = MagicMock()
         with patch(f"{PATCH_BASE}.SessionLocal", return_value=mock_db):
-            with pytest.raises(RuntimeError, match="AI失敗"):
-                pipeline.run()
+            processed, errors = pipeline.run()
 
+        assert processed == 0
+        assert len(errors) == 1
+        assert "AI失敗" in errors[0]
+        mock_db.rollback.assert_called_once()
         mock_db.close.assert_called_once()
 
 
@@ -225,9 +231,10 @@ class TestProcessOne:
         self._setup_mocks(mocks)
 
         with (
-            patch(f"{PATCH_BASE}.save_mail"),
+            patch(f"{PATCH_BASE}.save_mail") as mock_save_mail,
             patch(f"{PATCH_BASE}.save_mail_assessment"),
         ):
+            mock_save_mail.return_value = MagicMock(is_analyzed=False, assessment=None)
             pipeline._process_one(MagicMock(), "msg-xyz")
 
         mocks["mail_repo"].fetch.assert_called_once_with("msg-xyz")
@@ -241,9 +248,10 @@ class TestProcessOne:
         mocks["classifier"].classify.return_value = _make_analyzed()
 
         with (
-            patch(f"{PATCH_BASE}.save_mail"),
+            patch(f"{PATCH_BASE}.save_mail") as mock_save_mail,
             patch(f"{PATCH_BASE}.save_mail_assessment"),
         ):
+            mock_save_mail.return_value = MagicMock(is_analyzed=False, assessment=None)
             pipeline._process_one(MagicMock(), "msg-1")
 
         mocks["parser"].parse.assert_called_once_with(raw)
@@ -254,47 +262,46 @@ class TestProcessOne:
         self._setup_mocks(mocks, mail=mail)
 
         with (
-            patch(f"{PATCH_BASE}.save_mail"),
+            patch(f"{PATCH_BASE}.save_mail") as mock_save_mail,
             patch(f"{PATCH_BASE}.save_mail_assessment"),
         ):
+            mock_save_mail.return_value = MagicMock(is_analyzed=False, assessment=None)
             pipeline._process_one(MagicMock(), "msg-1")
 
         mocks["pretreatment"].process.assert_called_once_with("元の本文")
 
-    def test_body_is_truncated_to_max_body_chars(self, mocks):
-        pipeline = mocks["pipeline"]
-        long_body = "あ" * 3000  # MAX_BODY_CHARS(2000) を超える
-        mail = _make_mail(body=long_body)
-        self._setup_mocks(mocks, mail=mail, pretreatment_result=long_body)
+    def test_skips_when_already_analyzed(self, mocks):
+        """DBで既に分析済み(is_analyzed)のメールは再分析しない。"""
+        self._setup_mocks(mocks)
 
         with (
-            patch(f"{PATCH_BASE}.save_mail"),
+            patch(f"{PATCH_BASE}.save_mail") as mock_save_mail,
             patch(f"{PATCH_BASE}.save_mail_assessment"),
         ):
+            mock_save_mail.return_value = MagicMock(is_analyzed=True, assessment=None)
+            pipeline = mocks["pipeline"]
             pipeline._process_one(MagicMock(), "msg-1")
 
-        classified_mail = mocks["classifier"].classify.call_args[0][0]
-        assert len(classified_mail.body) == MAX_BODY_CHARS
+        mocks["classifier"].classify.assert_not_called()
 
-    def test_body_within_limit_is_not_truncated(self, mocks):
+    def test_skips_when_body_is_empty(self, mocks):
+        """前処理後の本文が空(空白のみ含む)ならAI分析をスキップする。"""
         pipeline = mocks["pipeline"]
-        short_body = "短い本文"
-        mail = _make_mail(body=short_body)
-        self._setup_mocks(mocks, mail=mail, pretreatment_result=short_body)
+        self._setup_mocks(mocks, pretreatment_result="   ")
 
         with (
-            patch(f"{PATCH_BASE}.save_mail"),
+            patch(f"{PATCH_BASE}.save_mail") as mock_save_mail,
             patch(f"{PATCH_BASE}.save_mail_assessment"),
         ):
+            mock_save_mail.return_value = MagicMock(is_analyzed=False, assessment=None)
             pipeline._process_one(MagicMock(), "msg-1")
 
-        classified_mail = mocks["classifier"].classify.call_args[0][0]
-        assert classified_mail.body == short_body
+        mocks["classifier"].classify.assert_not_called()
 
     def test_saves_mail_and_assessment_to_db(self, mocks):
         pipeline = mocks["pipeline"]
         analyzed = _make_analyzed(should_create_todo=False)
-        self._setup_mocks(mocks, analyzed=analyzed)
+        mail, analyzed = self._setup_mocks(mocks, analyzed=analyzed)
 
         mock_db = MagicMock()
         with (
@@ -302,32 +309,36 @@ class TestProcessOne:
             patch(f"{PATCH_BASE}.save_mail_assessment") as mock_save_assessment,
             patch(f"{PATCH_BASE}.save_todo"),
         ):
+            mock_save_mail.return_value = MagicMock(is_analyzed=False, assessment=None)
             pipeline._process_one(mock_db, "msg-1")
 
-        mock_save_mail.assert_called_once_with(mock_db, analyzed.mail)
+        mock_save_mail.assert_called_once_with(mock_db, mail, "user-1")
         mock_save_assessment.assert_called_once_with(
-            mock_db, analyzed.mail.id, analyzed.mail_ai_analysis
+            mock_db, mail.id, analyzed.mail_ai_analysis
         )
 
     def test_creates_todo_when_should_create_todo_is_true(self, mocks):
         pipeline = mocks["pipeline"]
         analyzed = _make_analyzed(should_create_todo=True)
         todo = _make_todo()
-        self._setup_mocks(mocks, analyzed=analyzed)
+        mail, analyzed = self._setup_mocks(mocks, analyzed=analyzed)
         mocks["todo_generator"].create.return_value = todo
 
         mock_db = MagicMock()
         with (
-            patch(f"{PATCH_BASE}.save_mail"),
+            patch(f"{PATCH_BASE}.save_mail") as mock_save_mail,
             patch(f"{PATCH_BASE}.save_mail_assessment"),
             patch(f"{PATCH_BASE}.save_todo") as mock_save_todo,
         ):
+            mock_save_mail.return_value = MagicMock(is_analyzed=False, assessment=None)
             pipeline._process_one(mock_db, "msg-1")
 
         mocks["todo_generator"].create.assert_called_once_with(
             analyzed_mail=analyzed, user_id="user-1"
         )
-        mock_save_todo.assert_called_once_with(mock_db, "user-1", todo)
+        mock_save_todo.assert_called_once_with(
+            mock_db, "user-1", todo, analyzed.mail_ai_analysis.extracted_deadline
+        )
 
     def test_skips_todo_when_should_create_todo_is_false(self, mocks):
         pipeline = mocks["pipeline"]
@@ -335,10 +346,11 @@ class TestProcessOne:
         self._setup_mocks(mocks, analyzed=analyzed)
 
         with (
-            patch(f"{PATCH_BASE}.save_mail"),
+            patch(f"{PATCH_BASE}.save_mail") as mock_save_mail,
             patch(f"{PATCH_BASE}.save_mail_assessment"),
             patch(f"{PATCH_BASE}.save_todo") as mock_save_todo,
         ):
+            mock_save_mail.return_value = MagicMock(is_analyzed=False, assessment=None)
             pipeline._process_one(MagicMock(), "msg-1")
 
         mocks["todo_generator"].create.assert_not_called()
@@ -355,9 +367,10 @@ class TestProcessOne:
         mocks["classifier"].classify.return_value = analyzed
 
         with (
-            patch(f"{PATCH_BASE}.save_mail"),
+            patch(f"{PATCH_BASE}.save_mail") as mock_save_mail,
             patch(f"{PATCH_BASE}.save_mail_assessment"),
         ):
+            mock_save_mail.return_value = MagicMock(is_analyzed=False, assessment=None)
             pipeline._process_one(MagicMock(), "msg-1")
 
         classified_mail = mocks["classifier"].classify.call_args[0][0]
