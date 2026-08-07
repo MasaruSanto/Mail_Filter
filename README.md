@@ -375,6 +375,6 @@ docker compose up -d
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-## 今後の課題
+## 課題
 
 - **ローカルLLM推論の速度** — ローカル推論（LM Studio）は環境によっては 20 件（本文サイズはまちまち）の処理に 15〜20 分程度かかることがあり、また推論エラーが返ることもある。そのため実運用では速度と安定性を優先して OpenAI API 切り替えを使うことが多く、「完全ローカルでのプライバシー保護」は設定上は選択可能だが、現状は速度とのトレードオフになっている。軽量モデルへの切り替えやバッチ処理の最適化が今後の課題。
