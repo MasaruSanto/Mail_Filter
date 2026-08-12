@@ -99,15 +99,6 @@ def get_mail_detail(db: Session, mail_id: str, user_id: str | None = None) -> DB
     q = q.filter(DBMail.user_id == user_id)
   return q.first()
 
-def get_todo_list(db:Session, user_id:str) -> list[DBTODO]:
-  #ユーザーIDを使いTODOリストを取得
-  return (
-    db.query(DBTODO)
-    .filter(DBTODO.user_id == user_id)
-    .order_by(DBTODO.created_at.desc())
-    .all()
-  )
-
 def get_todo(db: Session, todo_id: str, user_id: str) -> DBTODO | None:
   return (
     db.query(DBTODO)

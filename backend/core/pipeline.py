@@ -21,7 +21,6 @@ from todo_service import TodoService
 from db.engine import SessionLocal
 from db.query import save_mail, save_mail_assessment, save_todo
 
-MAX_BODY_CHARS = 4000
 
 class MailPipeline:
 
